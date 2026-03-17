@@ -19,6 +19,7 @@ import {
     SourceIntents,
     BadgeColor,
     PartialSourceManga,
+    DUISection,
 } from '@paperback/types';
 
 const DOMAIN = 'https://yurigarden.com/';
@@ -61,10 +62,21 @@ export const YuriGardenInfo: SourceInfo = {
             type: BadgeColor.BLUE,
         },
     ],
-    intents: SourceIntents.MANGA_CHAPTERS | SourceIntents.HOMEPAGE_SECTIONS | SourceIntents.CLOUDFLARE_BYPASS_REQUIRED,
+    intents: SourceIntents.MANGA_CHAPTERS | SourceIntents.HOMEPAGE_SECTIONS | SourceIntents.CLOUDFLARE_BYPASS_REQUIRED | SourceIntents.SETTINGS_UI,
 };
 
 export class YuriGarden implements ChapterProviding, MangaProviding, SearchResultsProviding, HomePageSectionsProviding {
+
+    stateManager = App.createSourceStateManager();
+
+    private async isR18Enabled(): Promise<boolean> {
+        const value = await this.stateManager.retrieve('enable_r18');
+        return value === true;
+    }
+
+    private async getR18QueryValue(): Promise<string> {
+        return (await this.isR18Enabled()) ? 'true' : 'false';
+    }
 
     private cloudflareError(status: number): void {
         if (status == 503 || status == 403) {
@@ -98,6 +110,29 @@ export class YuriGarden implements ChapterProviding, MangaProviding, SearchResul
 
     getMangaShareUrl(mangaId: string): string {
         return `${DOMAIN}comic/${mangaId}`;
+    }
+
+    async getSourceMenu(): Promise<DUISection> {
+        return App.createDUISection({
+            id: 'main',
+            header: 'YuriGarden Settings',
+            rows: async () => [
+                App.createDUISelect({
+                    id: 'adult_content',
+                    label: '18+ Content',
+                    options: ['off', 'on'],
+                    allowsMultiselect: false,
+                    value: App.createDUIBinding({
+                        get: async () => [(await this.isR18Enabled()) ? 'on' : 'off'],
+                        set: async (value: string[]) => {
+                            await this.stateManager.store('enable_r18', value[0] === 'on');
+                        },
+                    }),
+                    labelResolver: async (option: string) => option === 'on' ? 'Show 18+ titles' : 'Hide 18+ titles',
+                }),
+            ],
+            isHidden: false,
+        });
     }
 
     private async getJSON<T>(url: string): Promise<T> {
@@ -229,8 +264,9 @@ export class YuriGarden implements ChapterProviding, MangaProviding, SearchResul
         const page = metadata?.page ?? 1;
         const limit = 12;
         const title = (query.title ?? '').trim();
+        const r18 = await this.getR18QueryValue();
 
-        const url = `${API_DOMAIN}api/comics?page=${page}&limit=${limit}&full=true${title ? `&search=${encodeURIComponent(title)}` : ''}`;
+        const url = `${API_DOMAIN}api/comics?page=${page}&limit=${limit}&full=true&r18=${r18}${title ? `&search=${encodeURIComponent(title)}` : ''}`;
         const payload = await this.getJSON<any>(url);
 
         const allResults: PartialSourceManga[] = (payload.comics ?? []).map((comic: any) => this.toPartialManga(comic));
@@ -256,6 +292,7 @@ export class YuriGarden implements ChapterProviding, MangaProviding, SearchResul
     }
 
     async getHomePageSections(sectionCallback: (section: HomeSection) => void): Promise<void> {
+        const r18 = await this.getR18QueryValue();
         const sections: HomeSection[] = [
             App.createHomeSection({ id: 'random', title: 'Ngau nhien', containsMoreItems: false, type: HomeSectionType.singleRowNormal }),
             App.createHomeSection({ id: 'latest', title: 'Moi cap nhat', containsMoreItems: true, type: HomeSectionType.singleRowNormal }),
@@ -267,17 +304,17 @@ export class YuriGarden implements ChapterProviding, MangaProviding, SearchResul
 
             switch (section.id) {
                 case 'random': {
-                    const randomComics = await this.getJSON<any[]>(`${API_DOMAIN}api/comics/random`);
+                    const randomComics = await this.getJSON<any[]>(`${API_DOMAIN}api/comics/random?r18=${r18}`);
                     section.items = randomComics.map((comic) => this.toPartialManga(comic));
                     break;
                 }
                 case 'latest': {
-                    const payload = await this.getJSON<any>(`${API_DOMAIN}api/comics?page=1&limit=12&full=true`);
+                    const payload = await this.getJSON<any>(`${API_DOMAIN}api/comics?page=1&limit=12&full=true&r18=${r18}`);
                     section.items = (payload.comics ?? []).map((comic: any) => this.toPartialManga(comic));
                     break;
                 }
                 case 'trending': {
-                    const trending = await this.getJSON<any[]>(`${API_DOMAIN}api/comics/rank/trending?viewType=view&trendingType=day&r18=false`);
+                    const trending = await this.getJSON<any[]>(`${API_DOMAIN}api/comics/rank/trending?viewType=view&trendingType=day&r18=${r18}`);
                     section.items = trending.map((comic) => this.toPartialManga(comic));
                     break;
                 }
@@ -294,7 +331,8 @@ export class YuriGarden implements ChapterProviding, MangaProviding, SearchResul
 
         const page = metadata?.page ?? 1;
         const limit = 12;
-        const payload = await this.getJSON<any>(`${API_DOMAIN}api/comics?page=${page}&limit=${limit}&full=true`);
+        const r18 = await this.getR18QueryValue();
+        const payload = await this.getJSON<any>(`${API_DOMAIN}api/comics?page=${page}&limit=${limit}&full=true&r18=${r18}`);
 
         const results = (payload.comics ?? []).map((comic: any) => this.toPartialManga(comic));
         const nextMetadata = page < Number(payload.totalPages ?? 1) ? { page: page + 1 } : undefined;
