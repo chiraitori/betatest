@@ -66,6 +66,12 @@ export const YuriGardenInfo: SourceInfo = {
 
 export class YuriGarden implements ChapterProviding, MangaProviding, SearchResultsProviding, HomePageSectionsProviding {
 
+    private cloudflareError(status: number): void {
+        if (status == 503 || status == 403) {
+            throw new Error(`CLOUDFLARE BYPASS ERROR:\nPlease go to home page ${YuriGardenInfo.name} source and press the cloud icon.`);
+        }
+    }
+
     readonly requestManager = App.createRequestManager({
         requestsPerSecond: 4,
         requestTimeout: 35000,
@@ -100,8 +106,21 @@ export class YuriGarden implements ChapterProviding, MangaProviding, SearchResul
             method: 'GET',
         });
         const response = await this.requestManager.schedule(request, 1);
+        this.cloudflareError(response.status);
         const data = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
         return data as T;
+    }
+
+    async getCloudflareBypassRequestAsync(): Promise<Request> {
+        return App.createRequest({
+            url: DOMAIN,
+            method: 'GET',
+            headers: {
+                referer: DOMAIN,
+                origin: DOMAIN.replace(/\/$/, ''),
+                'user-agent': await this.requestManager.getDefaultUserAgent(),
+            },
+        });
     }
 
     private toPartialManga(comic: any): PartialSourceManga {
@@ -188,10 +207,7 @@ export class YuriGarden implements ChapterProviding, MangaProviding, SearchResul
             method: 'GET',
         });
         const response = await this.requestManager.schedule(request, 1);
-
-        if (response.status === 403) {
-            throw new Error('Chapter pages are currently protected. Please run Cloudflare bypass for YuriGarden and retry.');
-        }
+        this.cloudflareError(response.status);
 
         const pagesData = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
         const pages = (pagesData as any[])
