@@ -529,6 +529,11 @@ class YuriGarden {
             },
         });
     }
+    cloudflareError(status) {
+        if (status == 503 || status == 403) {
+            throw new Error(`CLOUDFLARE BYPASS ERROR:\nPlease go to home page ${exports.YuriGardenInfo.name} source and press the cloud icon.`);
+        }
+    }
     getMangaShareUrl(mangaId) {
         return `${DOMAIN}comic/${mangaId}`;
     }
@@ -538,8 +543,20 @@ class YuriGarden {
             method: 'GET',
         });
         const response = await this.requestManager.schedule(request, 1);
+        this.cloudflareError(response.status);
         const data = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
         return data;
+    }
+    async getCloudflareBypassRequestAsync() {
+        return App.createRequest({
+            url: DOMAIN,
+            method: 'GET',
+            headers: {
+                referer: DOMAIN,
+                origin: DOMAIN.replace(/\/$/, ''),
+                'user-agent': await this.requestManager.getDefaultUserAgent(),
+            },
+        });
     }
     toPartialManga(comic) {
         return App.createPartialSourceManga({
@@ -614,9 +631,7 @@ class YuriGarden {
             method: 'GET',
         });
         const response = await this.requestManager.schedule(request, 1);
-        if (response.status === 403) {
-            throw new Error('Chapter pages are currently protected. Please run Cloudflare bypass for YuriGarden and retry.');
-        }
+        this.cloudflareError(response.status);
         const pagesData = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
         const pages = pagesData
             .map((page) => normalizeImageUrl(page?.url))
