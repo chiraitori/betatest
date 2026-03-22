@@ -486,6 +486,44 @@ const mapStatus = (status) => {
             return 'UNKNOWN';
     }
 };
+const pickFirstNumeric = (value) => {
+    const match = value.match(/\d+/);
+    return match?.[0];
+};
+const extractMangaId = (input) => {
+    if (typeof input === 'number' && Number.isFinite(input))
+        return String(input);
+    const raw = String(input ?? '').trim();
+    if (!raw)
+        throw new Error('Missing manga ID');
+    if (/^\d+$/.test(raw))
+        return raw;
+    // Supports full URL/share URL forms like https://yurigarden.com/comic/1234
+    const comicRoute = raw.match(/\/comic\/(\d+)/i)?.[1];
+    if (comicRoute)
+        return comicRoute;
+    const numeric = pickFirstNumeric(raw);
+    if (numeric)
+        return numeric;
+    throw new Error(`Unable to extract manga ID from value: ${raw}`);
+};
+const extractChapterId = (input) => {
+    if (typeof input === 'number' && Number.isFinite(input))
+        return String(input);
+    const raw = String(input ?? '').trim();
+    if (!raw)
+        throw new Error('Missing chapter ID');
+    if (/^\d+$/.test(raw))
+        return raw;
+    // Supports URL forms like /comic/1234/5678 or chapter query strings.
+    const chapterRoute = raw.match(/\/comic\/\d+\/(\d+)/i)?.[1];
+    if (chapterRoute)
+        return chapterRoute;
+    const numeric = pickFirstNumeric(raw);
+    if (numeric)
+        return numeric;
+    throw new Error(`Unable to extract chapter ID from value: ${raw}`);
+};
 exports.YuriGardenInfo = {
     version: '1.0.0',
     name: 'YuriGarden',
@@ -543,7 +581,7 @@ class YuriGarden {
         }
     }
     getMangaShareUrl(mangaId) {
-        return `${DOMAIN}comic/${mangaId}`;
+        return `${DOMAIN}comic/${extractMangaId(mangaId)}`;
     }
     async getSourceMenu() {
         return App.createDUISection({
@@ -614,7 +652,8 @@ class YuriGarden {
         ];
     }
     async getMangaDetails(mangaId) {
-        const comic = await this.getJSON(`${API_DOMAIN}api/comics/${mangaId}`);
+        const id = extractMangaId(mangaId);
+        const comic = await this.getJSON(`${API_DOMAIN}api/comics/${id}`);
         const tags = (comic.genres ?? []).map((genre) => App.createTag({
             id: genre,
             label: genre,
@@ -639,7 +678,8 @@ class YuriGarden {
         });
     }
     async getChapters(mangaId) {
-        const chapters = await this.getJSON(`${API_DOMAIN}api/chapters/comic/${mangaId}`);
+        const id = extractMangaId(mangaId);
+        const chapters = await this.getJSON(`${API_DOMAIN}api/chapters/comic/${id}`);
         return [...chapters]
             .sort((a, b) => Number(a.order) - Number(b.order))
             .map((chapter) => {
@@ -656,8 +696,10 @@ class YuriGarden {
         });
     }
     async getChapterDetails(mangaId, chapterId) {
+        const normalizedMangaId = extractMangaId(mangaId);
+        const normalizedChapterId = extractChapterId(chapterId);
         const request = App.createRequest({
-            url: `${API_DOMAIN}api/chapters/pages/${chapterId}`,
+            url: `${API_DOMAIN}api/chapters/pages/${normalizedChapterId}`,
             method: 'GET',
         });
         const response = await this.requestManager.schedule(request, 1);
@@ -670,8 +712,8 @@ class YuriGarden {
             throw new Error('No pages found for this chapter');
         }
         return App.createChapterDetails({
-            id: chapterId,
-            mangaId,
+            id: normalizedChapterId,
+            mangaId: normalizedMangaId,
             pages,
         });
     }
