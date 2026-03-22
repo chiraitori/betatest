@@ -8016,18 +8016,36 @@ const extractPagesFromPayload = (payload, preferUnscrambled) => {
             return entry;
         if (typeof entry !== 'object')
             return undefined;
+        const rawCandidate = entry.originalUrl ??
+            entry.originUrl ??
+            entry.rawUrl ??
+            entry.fullUrl ??
+            entry.imageUrl ??
+            entry.fileUrl ??
+            entry.origin ??
+            entry.original ??
+            entry.raw ??
+            entry?.page?.originalUrl ??
+            entry?.page?.originUrl ??
+            entry?.page?.rawUrl ??
+            entry?.page?.original ??
+            entry?.page?.origin;
+        if (typeof rawCandidate === 'string' && rawCandidate.trim().length > 0) {
+            return rawCandidate;
+        }
         if (preferUnscrambled) {
-            const rawCandidate = entry.originalUrl ??
-                entry.originUrl ??
-                entry.rawUrl ??
-                entry.fullUrl ??
-                entry.imageUrl ??
-                entry.fileUrl ??
-                entry?.page?.originalUrl ??
-                entry?.page?.originUrl ??
-                entry?.page?.rawUrl;
-            if (typeof rawCandidate === 'string' && rawCandidate.trim().length > 0) {
-                return rawCandidate;
+            const imageCandidates = [
+                entry?.images?.original,
+                entry?.images?.raw,
+                entry?.images?.full,
+                entry?.image?.original,
+                entry?.image?.raw,
+                Array.isArray(entry?.images) ? entry.images[0] : undefined,
+            ];
+            for (const candidate of imageCandidates) {
+                if (typeof candidate === 'string' && candidate.trim().length > 0) {
+                    return candidate;
+                }
             }
         }
         const candidate = entry.url ??
@@ -8056,6 +8074,19 @@ const extractPagesFromPayload = (payload, preferUnscrambled) => {
         .filter((value) => !!value)
         .map((value) => normalizeImageUrl(value))
         .filter((value) => !!value);
+};
+const buildComicsQuery = (params) => {
+    const query = [
+        `page=${params.page}`,
+        `limit=${params.limit}`,
+        `full=${params.full === false ? 'false' : 'true'}`,
+        `r18=${params.r18}`,
+        `allowR18=${params.r18}`,
+    ];
+    if (params.search) {
+        query.push(`search=${encodeURIComponent(params.search)}`);
+    }
+    return query.join('&');
 };
 exports.YuriGardenInfo = {
     version: '1.0.0',
@@ -8276,7 +8307,13 @@ class YuriGarden {
         const limit = 12;
         const title = (query.title ?? '').trim();
         const r18 = await this.getR18QueryValue();
-        const url = `${API_DOMAIN}api/comics?page=${page}&limit=${limit}&full=true&r18=${r18}${title ? `&search=${encodeURIComponent(title)}` : ''}`;
+        const url = `${API_DOMAIN}api/comics?${buildComicsQuery({
+            page,
+            limit,
+            full: true,
+            search: title || undefined,
+            r18,
+        })}`;
         const payload = await this.getJSON(url);
         const allResults = (payload.comics ?? []).map((comic) => this.toPartialManga(comic));
         const selectedGenres = new Set((query.includedTags ?? []).map((tag) => tag.id));
@@ -8308,17 +8345,22 @@ class YuriGarden {
             sectionCallback(section);
             switch (section.id) {
                 case 'random': {
-                    const randomComics = await this.getJSON(`${API_DOMAIN}api/comics/random?r18=${r18}`);
+                    const randomComics = await this.getJSON(`${API_DOMAIN}api/comics/random?r18=${r18}&allowR18=${r18}`);
                     section.items = randomComics.map((comic) => this.toPartialManga(comic));
                     break;
                 }
                 case 'latest': {
-                    const payload = await this.getJSON(`${API_DOMAIN}api/comics?page=1&limit=12&full=true&r18=${r18}`);
+                    const payload = await this.getJSON(`${API_DOMAIN}api/comics?${buildComicsQuery({
+                        page: 1,
+                        limit: 12,
+                        full: true,
+                        r18,
+                    })}`);
                     section.items = (payload.comics ?? []).map((comic) => this.toPartialManga(comic));
                     break;
                 }
                 case 'trending': {
-                    const trending = await this.getJSON(`${API_DOMAIN}api/comics/rank/trending?viewType=view&trendingType=day&r18=${r18}`);
+                    const trending = await this.getJSON(`${API_DOMAIN}api/comics/rank/trending?viewType=view&trendingType=day&r18=${r18}&allowR18=${r18}`);
                     section.items = trending.map((comic) => this.toPartialManga(comic));
                     break;
                 }
@@ -8333,7 +8375,12 @@ class YuriGarden {
         const page = metadata?.page ?? 1;
         const limit = 12;
         const r18 = await this.getR18QueryValue();
-        const payload = await this.getJSON(`${API_DOMAIN}api/comics?page=${page}&limit=${limit}&full=true&r18=${r18}`);
+        const payload = await this.getJSON(`${API_DOMAIN}api/comics?${buildComicsQuery({
+            page,
+            limit,
+            full: true,
+            r18,
+        })}`);
         const results = (payload.comics ?? []).map((comic) => this.toPartialManga(comic));
         const nextMetadata = page < Number(payload.totalPages ?? 1) ? { page: page + 1 } : undefined;
         return App.createPagedResults({
