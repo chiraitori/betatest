@@ -257,6 +257,79 @@ const normalizeChapterPagesPayload = (payload: any): any => {
     };
 };
 
+const toEntries = (value: any): any[] => {
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === 'object') return Object.values(value);
+    return [];
+};
+
+const payloadHasScrambleHints = (payload: any): boolean => {
+    const pageEntries = toEntries(payload?.pages);
+
+    for (const entry of pageEntries) {
+        if (!entry || typeof entry !== 'object') continue;
+        if (typeof entry.key === 'string' && entry.key.length > 0) return true;
+        if (Array.isArray(entry.decoded) && entry.decoded.length > 0) return true;
+    }
+
+    return false;
+};
+
+const extractPagesFromPayload = (payload: any, preferUnscrambled: boolean): string[] => {
+    const extractImageValue = (entry: any): string | undefined => {
+        if (!entry) return undefined;
+        if (typeof entry === 'string') return entry;
+        if (typeof entry !== 'object') return undefined;
+
+        if (preferUnscrambled) {
+            const rawCandidate =
+                entry.originalUrl ??
+                entry.originUrl ??
+                entry.rawUrl ??
+                entry.fullUrl ??
+                entry.imageUrl ??
+                entry.fileUrl ??
+                entry?.page?.originalUrl ??
+                entry?.page?.originUrl ??
+                entry?.page?.rawUrl;
+
+            if (typeof rawCandidate === 'string' && rawCandidate.trim().length > 0) {
+                return rawCandidate;
+            }
+        }
+
+        const candidate =
+            entry.url ??
+            entry.image ??
+            entry.src ??
+            entry.path ??
+            entry.file ??
+            entry.link ??
+            entry?.page?.url ??
+            entry?.page?.image;
+
+        return typeof candidate === 'string' ? candidate : undefined;
+    };
+
+    const candidateBuckets = [
+        payload,
+        payload?.pages,
+        payload?.data,
+        payload?.data?.pages,
+        payload?.result,
+        payload?.result?.pages,
+        payload?.items,
+        payload?.list,
+    ];
+
+    return candidateBuckets
+        .flatMap((bucket) => toEntries(bucket))
+        .map((entry: any) => extractImageValue(entry))
+        .filter((value: string | undefined): value is string => !!value)
+        .map((value: string) => normalizeImageUrl(value))
+        .filter((value: string) => !!value);
+};
+
 export const YuriGardenInfo: SourceInfo = {
     version: '1.0.0',
     name: 'YuriGarden',
@@ -451,57 +524,30 @@ export class YuriGarden implements ChapterProviding, MangaProviding, SearchResul
     async getChapterDetails(mangaId: string, chapterId: string): Promise<ChapterDetails> {
         const normalizedMangaId = extractMangaId(mangaId);
         const normalizedChapterId = extractChapterId(chapterId);
-        const request = App.createRequest({
-            url: `${API_DOMAIN}api/chapters/pages/${normalizedChapterId}`,
-            method: 'GET',
-        });
-        const response = await this.requestManager.schedule(request, 1);
-        this.cloudflareError(response.status);
+        const fetchPayload = async (useEdit: boolean): Promise<any> => {
+            const request = App.createRequest({
+                url: `${API_DOMAIN}api/chapters/pages/${normalizedChapterId}${useEdit ? '?edit=true' : ''}`,
+                method: 'GET',
+            });
+            const response = await this.requestManager.schedule(request, 1);
+            this.cloudflareError(response.status);
 
-        const rawPayload = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
-        const payload = normalizeChapterPagesPayload(rawPayload);
-
-        const toEntries = (value: any): any[] => {
-            if (Array.isArray(value)) return value;
-            if (value && typeof value === 'object') return Object.values(value);
-            return [];
+            const rawPayload = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+            return normalizeChapterPagesPayload(rawPayload);
         };
 
-        const extractImageValue = (entry: any): string | undefined => {
-            if (!entry) return undefined;
-            if (typeof entry === 'string') return entry;
-            if (typeof entry !== 'object') return undefined;
+        const payload = await fetchPayload(false);
+        let pages = extractPagesFromPayload(payload, false);
 
-            const candidate =
-                entry.url ??
-                entry.image ??
-                entry.src ??
-                entry.path ??
-                entry.file ??
-                entry.link ??
-                entry?.page?.url ??
-                entry?.page?.image;
-
-            return typeof candidate === 'string' ? candidate : undefined;
-        };
-
-        const candidateBuckets = [
-            payload,
-            payload?.pages,
-            payload?.data,
-            payload?.data?.pages,
-            payload?.result,
-            payload?.result?.pages,
-            payload?.items,
-            payload?.list,
-        ];
-
-        const pages = candidateBuckets
-            .flatMap((bucket) => toEntries(bucket))
-            .map((entry: any) => extractImageValue(entry))
-            .filter((value: string | undefined): value is string => !!value)
-            .map((value: string) => normalizeImageUrl(value))
-            .filter((value: string) => !!value);
+        if (payloadHasScrambleHints(payload)) {
+            try {
+                const editPayload = await fetchPayload(true);
+                const editPages = extractPagesFromPayload(editPayload, true);
+                if (editPages.length > 0) pages = editPages;
+            } catch {
+                // Keep default page URLs when edit endpoint is unavailable.
+            }
+        }
 
         if (!pages.length) {
             const statusCode = Number(payload?.statusCode ?? payload?.data?.statusCode ?? 0);
