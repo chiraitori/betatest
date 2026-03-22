@@ -22,6 +22,9 @@ import {
     DUISection,
 } from '@paperback/types';
 
+declare const require: any;
+const CryptoJS: any = require('crypto-js');
+
 const DOMAIN = 'https://yurigarden.com/';
 const API_DOMAIN = 'https://api.yurigarden.com/';
 const STORE_DOMAIN = 'https://db.yurigarden.com/storage/v1/object/public/yuri-garden-store/';
@@ -84,6 +87,174 @@ const extractChapterId = (input: unknown): string => {
     if (numeric) return numeric;
 
     throw new Error(`Unable to extract chapter ID from value: ${raw}`);
+};
+
+const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const FACTORIAL_TABLE = [1, 1, 2, 6, 24, 120, 720, 5040, 40320, 362880, 3628800];
+
+const buildDecryptPassphrase = (): string => {
+    const a = new Uint8Array([84, 122, 83, 44]);
+    const b = new Uint8Array([53, 45, 64, 230]);
+    const c = new Uint8Array([220, 207, 245, 148]);
+    const d = new Uint8Array([184, 136, 188, 119]);
+    const x = new Uint8Array([18, 35, 52, 69]);
+    const y = new Uint8Array([86, 103, 120, 137]);
+    const z = new Uint8Array([154, 171, 188, 205]);
+    const w = new Uint8Array([222, 239, 240, 1]);
+
+    const bytes: number[] = [];
+    for (let i = 0; i < 4; i++) bytes.push((a[i] ?? 0) ^ (x[i] ?? 0));
+    for (let i = 0; i < 4; i++) bytes.push((b[i] ?? 0) ^ (y[i] ?? 0));
+    for (let i = 0; i < 4; i++) bytes.push((c[i] ?? 0) ^ (z[i] ?? 0));
+    for (let i = 0; i < 4; i++) bytes.push((d[i] ?? 0) ^ (w[i] ?? 0));
+
+    return String.fromCharCode(...bytes);
+};
+
+const toWordArray = (bytes: number[], length?: number): any => {
+    const sigBytes = length ?? bytes.length;
+    const words: number[] = [];
+
+    for (let i = 0; i < sigBytes; i += 4) {
+        words.push(
+            ((((bytes[i] ?? 0) << 24) |
+                ((bytes[i + 1] ?? 0) << 16) |
+                ((bytes[i + 2] ?? 0) << 8) |
+                (bytes[i + 3] ?? 0)) >>> 0),
+        );
+    }
+
+    return CryptoJS.lib.WordArray.create(words, sigBytes);
+};
+
+const wordArrayToBytes = (wordArray: any): number[] => {
+    const out: number[] = [];
+    const sigBytes = wordArray.sigBytes;
+
+    for (let i = 0; i < sigBytes; i++) {
+        const word = wordArray.words[i >>> 2] ?? 0;
+        out.push((word >>> (24 - (i % 4) * 8)) & 255);
+    }
+
+    return out;
+};
+
+const md5Bytes = (bytes: number[]): number[] => {
+    const digest = CryptoJS.MD5(toWordArray(bytes)).toString(CryptoJS.enc.Hex);
+    const out: number[] = [];
+
+    for (let i = 0; i < digest.length; i += 2) {
+        out.push(parseInt(digest.slice(i, i + 2), 16));
+    }
+
+    return out;
+};
+
+const deriveKeyAndIv = (password: string, salt: number[]): { key: number[]; iv: number[] } => {
+    const passwordBytes = Array.from(password).map((ch) => ch.charCodeAt(0));
+    const first = md5Bytes([...passwordBytes, ...salt]);
+    const second = md5Bytes([...first, ...passwordBytes, ...salt]);
+    const third = md5Bytes([...second, ...passwordBytes, ...salt]);
+
+    return {
+        key: [...first, ...second],
+        iv: third,
+    };
+};
+
+const decryptChapterPayloadData = (base64Ciphertext: string, passphrase: string): string => {
+    const parsed = CryptoJS.enc.Base64.parse(base64Ciphertext);
+    const allBytes = wordArrayToBytes(parsed);
+
+    if (allBytes.length < 16) throw new Error('Encrypted payload is too short');
+
+    const salt = allBytes.slice(8, 16);
+    const encryptedBytes = allBytes.slice(16);
+    const { key, iv } = deriveKeyAndIv(passphrase, salt);
+
+    const decrypted = CryptoJS.AES.decrypt(
+        { ciphertext: toWordArray(encryptedBytes, encryptedBytes.length) } as any,
+        toWordArray(key, 32),
+        {
+            iv: toWordArray(iv, 16),
+            mode: CryptoJS.mode.CBC,
+            padding: CryptoJS.pad.Pkcs7,
+        },
+    );
+
+    return decrypted.toString(CryptoJS.enc.Utf8);
+};
+
+const tryDecodePageKey = (encoded: string): number[] | undefined => {
+    try {
+        if (!/^H[1-9A-HJ-NP-Za-km-z]+$/.test(encoded)) return undefined;
+        const body = encoded.slice(1, -1);
+        const checksum = encoded.slice(-1);
+
+        let value = 0;
+        for (const ch of body) {
+            const idx = BASE58_ALPHABET.indexOf(ch);
+            if (idx < 0) return undefined;
+            value = value * 58 + idx;
+        }
+
+        if (BASE58_ALPHABET[value % 58] !== checksum) return undefined;
+
+        const pool = Array.from({ length: 10 }, (_, i) => i);
+        const out: number[] = [];
+
+        for (let i = 9; i >= 0; i--) {
+            const f = FACTORIAL_TABLE[i] ?? 1;
+            const pick = Math.floor(value / f);
+            value = value % f;
+            const item = pool.splice(pick, 1)[0];
+            if (item === undefined) return undefined;
+            out.push(item);
+        }
+
+        return out;
+    } catch {
+        return undefined;
+    }
+};
+
+const normalizeChapterPagesPayload = (payload: any): any => {
+    let parsed = payload;
+
+    if (payload?.encrypted === true && typeof payload?.data === 'string') {
+        try {
+            const decryptedText = decryptChapterPayloadData(payload.data, buildDecryptPassphrase());
+            parsed = JSON.parse(decryptedText ?? '{}');
+        } catch {
+            parsed = payload;
+        }
+    }
+
+    if (!parsed || typeof parsed !== 'object') return parsed;
+
+    const pages = Array.isArray(parsed.pages)
+        ? parsed.pages
+        : (parsed.pages && typeof parsed.pages === 'object')
+            ? Object.values(parsed.pages)
+            : [];
+
+    if (!pages.length) return parsed;
+
+    const normalizedPages = pages.map((page: any) => {
+        const decoded = typeof page?.key === 'string' ? tryDecodePageKey(page.key.replace(/^.{4}/, '')) : undefined;
+        const cleanUrl = typeof page?.url === 'string' ? page.url.replace('_credit', '') : page?.url;
+
+        return {
+            ...page,
+            url: cleanUrl,
+            decoded,
+        };
+    });
+
+    return {
+        ...parsed,
+        pages: normalizedPages,
+    };
 };
 
 export const YuriGardenInfo: SourceInfo = {
@@ -287,7 +458,8 @@ export class YuriGarden implements ChapterProviding, MangaProviding, SearchResul
         const response = await this.requestManager.schedule(request, 1);
         this.cloudflareError(response.status);
 
-        const payload = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+        const rawPayload = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+        const payload = normalizeChapterPagesPayload(rawPayload);
 
         const toEntries = (value: any): any[] => {
             if (Array.isArray(value)) return value;
