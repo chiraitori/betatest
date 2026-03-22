@@ -47,6 +47,45 @@ const mapStatus = (status?: string): string => {
     }
 };
 
+const pickFirstNumeric = (value: string): string | undefined => {
+    const match = value.match(/\d+/);
+    return match?.[0];
+};
+
+const extractMangaId = (input: unknown): string => {
+    if (typeof input === 'number' && Number.isFinite(input)) return String(input);
+    const raw = String(input ?? '').trim();
+    if (!raw) throw new Error('Missing manga ID');
+
+    if (/^\d+$/.test(raw)) return raw;
+
+    // Supports full URL/share URL forms like https://yurigarden.com/comic/1234
+    const comicRoute = raw.match(/\/comic\/(\d+)/i)?.[1];
+    if (comicRoute) return comicRoute;
+
+    const numeric = pickFirstNumeric(raw);
+    if (numeric) return numeric;
+
+    throw new Error(`Unable to extract manga ID from value: ${raw}`);
+};
+
+const extractChapterId = (input: unknown): string => {
+    if (typeof input === 'number' && Number.isFinite(input)) return String(input);
+    const raw = String(input ?? '').trim();
+    if (!raw) throw new Error('Missing chapter ID');
+
+    if (/^\d+$/.test(raw)) return raw;
+
+    // Supports URL forms like /comic/1234/5678 or chapter query strings.
+    const chapterRoute = raw.match(/\/comic\/\d+\/(\d+)/i)?.[1];
+    if (chapterRoute) return chapterRoute;
+
+    const numeric = pickFirstNumeric(raw);
+    if (numeric) return numeric;
+
+    throw new Error(`Unable to extract chapter ID from value: ${raw}`);
+};
+
 export const YuriGardenInfo: SourceInfo = {
     version: '1.0.0',
     name: 'YuriGarden',
@@ -109,7 +148,7 @@ export class YuriGarden implements ChapterProviding, MangaProviding, SearchResul
     });
 
     getMangaShareUrl(mangaId: string): string {
-        return `${DOMAIN}comic/${mangaId}`;
+        return `${DOMAIN}comic/${extractMangaId(mangaId)}`;
     }
 
     async getSourceMenu(): Promise<DUISection> {
@@ -188,7 +227,8 @@ export class YuriGarden implements ChapterProviding, MangaProviding, SearchResul
     }
 
     async getMangaDetails(mangaId: string): Promise<SourceManga> {
-        const comic = await this.getJSON<any>(`${API_DOMAIN}api/comics/${mangaId}`);
+        const id = extractMangaId(mangaId);
+        const comic = await this.getJSON<any>(`${API_DOMAIN}api/comics/${id}`);
 
         const tags: Tag[] = (comic.genres ?? []).map((genre: string) => App.createTag({
             id: genre,
@@ -217,7 +257,8 @@ export class YuriGarden implements ChapterProviding, MangaProviding, SearchResul
     }
 
     async getChapters(mangaId: string): Promise<Chapter[]> {
-        const chapters = await this.getJSON<any[]>(`${API_DOMAIN}api/chapters/comic/${mangaId}`);
+        const id = extractMangaId(mangaId);
+        const chapters = await this.getJSON<any[]>(`${API_DOMAIN}api/chapters/comic/${id}`);
 
         return [...chapters]
             .sort((a, b) => Number(a.order) - Number(b.order))
@@ -237,8 +278,10 @@ export class YuriGarden implements ChapterProviding, MangaProviding, SearchResul
     }
 
     async getChapterDetails(mangaId: string, chapterId: string): Promise<ChapterDetails> {
+        const normalizedMangaId = extractMangaId(mangaId);
+        const normalizedChapterId = extractChapterId(chapterId);
         const request = App.createRequest({
-            url: `${API_DOMAIN}api/chapters/pages/${chapterId}`,
+            url: `${API_DOMAIN}api/chapters/pages/${normalizedChapterId}`,
             method: 'GET',
         });
         const response = await this.requestManager.schedule(request, 1);
@@ -254,8 +297,8 @@ export class YuriGarden implements ChapterProviding, MangaProviding, SearchResul
         }
 
         return App.createChapterDetails({
-            id: chapterId,
-            mangaId,
+            id: normalizedChapterId,
+            mangaId: normalizedMangaId,
             pages,
         });
     }
