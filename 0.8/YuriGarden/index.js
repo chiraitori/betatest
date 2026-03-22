@@ -704,29 +704,31 @@ class YuriGarden {
         });
         const response = await this.requestManager.schedule(request, 1);
         this.cloudflareError(response.status);
-        const pagesData = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
-        const pageItems = Array.isArray(pagesData)
-            ? pagesData
-            : Array.isArray(pagesData?.pages)
-                ? pagesData.pages
-                : Array.isArray(pagesData?.data)
-                    ? pagesData.data
-                    : Array.isArray(pagesData?.result)
-                        ? pagesData.result
-                        : [];
-        const pages = pageItems
-            .map((page) => {
-            if (typeof page === 'string')
-                return normalizeImageUrl(page);
-            return normalizeImageUrl(page?.url ?? page?.image ?? page?.src ?? page?.path);
-        })
-            .filter(Boolean);
-        if (!Array.isArray(pagesData) && pageItems.length === 0) {
-            const apiMessage = String(pagesData?.message ?? pagesData?.error ?? '').toLowerCase();
-            if (response.status === 403 || pagesData?.statusCode === 403 || apiMessage.includes('forbidden')) {
-                throw new Error('Chapter is protected. Open YuriGarden source and complete Cloudflare/verification, then try again.');
+        const payload = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+        // YuriGarden can return pages in multiple envelope shapes depending on auth/challenge state.
+        const pageItems = Array.isArray(payload)
+            ? payload
+            : Array.isArray(payload?.pages)
+                ? payload.pages
+                : Array.isArray(payload?.data)
+                    ? payload.data
+                    : Array.isArray(payload?.data?.pages)
+                        ? payload.data.pages
+                        : Array.isArray(payload?.result)
+                            ? payload.result
+                            : Array.isArray(payload?.result?.pages)
+                                ? payload.result.pages
+                                : [];
+        if (!pageItems.length) {
+            const statusCode = Number(payload?.statusCode ?? payload?.data?.statusCode ?? 0);
+            const message = String(payload?.message ?? payload?.data?.message ?? '').trim();
+            if (statusCode === 403 || /forbidden|verify|turnstile|password/i.test(message)) {
+                throw new Error(`Chapter requires verification: ${message || 'forbidden'}`);
             }
         }
+        const pages = pageItems
+            .map((page) => normalizeImageUrl(page?.url))
+            .filter(Boolean);
         if (!pages.length) {
             throw new Error('No pages found for this chapter');
         }
