@@ -289,36 +289,61 @@ export class YuriGarden implements ChapterProviding, MangaProviding, SearchResul
 
         const payload = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
 
-        // YuriGarden can return pages in multiple envelope shapes depending on auth/challenge state.
-        const pageItems = Array.isArray(payload)
-            ? payload
-            : Array.isArray(payload?.pages)
-                ? payload.pages
-                : Array.isArray(payload?.data)
-                    ? payload.data
-                    : Array.isArray(payload?.data?.pages)
-                        ? payload.data.pages
-                        : Array.isArray(payload?.result)
-                            ? payload.result
-                            : Array.isArray(payload?.result?.pages)
-                                ? payload.result.pages
-                                : [];
+        const toEntries = (value: any): any[] => {
+            if (Array.isArray(value)) return value;
+            if (value && typeof value === 'object') return Object.values(value);
+            return [];
+        };
 
-        if (!pageItems.length) {
+        const extractImageValue = (entry: any): string | undefined => {
+            if (!entry) return undefined;
+            if (typeof entry === 'string') return entry;
+            if (typeof entry !== 'object') return undefined;
+
+            const candidate =
+                entry.url ??
+                entry.image ??
+                entry.src ??
+                entry.path ??
+                entry.file ??
+                entry.link ??
+                entry?.page?.url ??
+                entry?.page?.image;
+
+            return typeof candidate === 'string' ? candidate : undefined;
+        };
+
+        const candidateBuckets = [
+            payload,
+            payload?.pages,
+            payload?.data,
+            payload?.data?.pages,
+            payload?.result,
+            payload?.result?.pages,
+            payload?.items,
+            payload?.list,
+        ];
+
+        const pages = candidateBuckets
+            .flatMap((bucket) => toEntries(bucket))
+            .map((entry: any) => extractImageValue(entry))
+            .filter((value: string | undefined): value is string => !!value)
+            .map((value: string) => normalizeImageUrl(value))
+            .filter((value: string) => !!value);
+
+        if (!pages.length) {
             const statusCode = Number(payload?.statusCode ?? payload?.data?.statusCode ?? 0);
             const message = String(payload?.message ?? payload?.data?.message ?? '').trim();
 
             if (statusCode === 403 || /forbidden|verify|turnstile|password/i.test(message)) {
                 throw new Error(`Chapter requires verification: ${message || 'forbidden'}`);
             }
-        }
 
-        const pages = pageItems
-            .map((page: any) => normalizeImageUrl(page?.url))
-            .filter(Boolean);
+            const shape = payload && typeof payload === 'object'
+                ? Object.keys(payload).slice(0, 8).join(', ')
+                : typeof payload;
 
-        if (!pages.length) {
-            throw new Error('No pages found for this chapter');
+            throw new Error(`No pages found for this chapter (payload shape: ${shape || 'unknown'})`);
         }
 
         return App.createChapterDetails({
