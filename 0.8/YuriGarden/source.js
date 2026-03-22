@@ -7976,7 +7976,17 @@ const normalizeChapterPagesPayload = (payload) => {
     if (!pages.length)
         return parsed;
     const normalizedPages = pages.map((page) => {
-        const decoded = typeof page?.key === 'string' ? tryDecodePageKey(page.key.replace(/^.{4}/, '')) : undefined;
+        const encodedKeyCandidate = page?.key ??
+            page?.pageKey ??
+            page?.decodeKey ??
+            page?.k ??
+            page?.token;
+        let decoded;
+        if (typeof encodedKeyCandidate === 'string') {
+            const trimmed = encodedKeyCandidate.trim();
+            const normalized = trimmed.startsWith('H') ? trimmed : trimmed.slice(4);
+            decoded = tryDecodePageKey(normalized);
+        }
         const cleanUrl = typeof page?.url === 'string' ? page.url.replace('_credit', '') : page?.url;
         return {
             ...page,
@@ -8003,7 +8013,20 @@ const payloadHasScrambleHints = (payload) => {
             continue;
         if (typeof entry.key === 'string' && entry.key.length > 0)
             return true;
+        if (typeof entry.pageKey === 'string' && entry.pageKey.length > 0)
+            return true;
+        if (typeof entry.decodeKey === 'string' && entry.decodeKey.length > 0)
+            return true;
+        if (typeof entry.k === 'string' && entry.k.length > 0)
+            return true;
         if (Array.isArray(entry.decoded) && entry.decoded.length > 0)
+            return true;
+        const hintedUrl = entry.url ??
+            entry.image ??
+            entry.src ??
+            entry?.page?.url ??
+            entry?.page?.image;
+        if (typeof hintedUrl === 'string' && hintedUrl.includes('_credit'))
             return true;
     }
     return false;
@@ -8022,12 +8045,16 @@ const extractPagesFromPayload = (payload, preferUnscrambled) => {
             entry.fullUrl ??
             entry.imageUrl ??
             entry.fileUrl ??
+            entry.unlockedUrl ??
+            entry.publicUrl ??
+            entry.sourceUrl ??
             entry.origin ??
             entry.original ??
             entry.raw ??
             entry?.page?.originalUrl ??
             entry?.page?.originUrl ??
             entry?.page?.rawUrl ??
+            entry?.page?.sourceUrl ??
             entry?.page?.original ??
             entry?.page?.origin;
         if (typeof rawCandidate === 'string' && rawCandidate.trim().length > 0) {
@@ -8038,8 +8065,10 @@ const extractPagesFromPayload = (payload, preferUnscrambled) => {
                 entry?.images?.original,
                 entry?.images?.raw,
                 entry?.images?.full,
+                entry?.images?.source,
                 entry?.image?.original,
                 entry?.image?.raw,
+                entry?.image?.source,
                 Array.isArray(entry?.images) ? entry.images[0] : undefined,
             ];
             for (const candidate of imageCandidates) {
