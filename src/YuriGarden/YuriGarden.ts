@@ -288,9 +288,30 @@ export class YuriGarden implements ChapterProviding, MangaProviding, SearchResul
         this.cloudflareError(response.status);
 
         const pagesData = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
-        const pages = (pagesData as any[])
-            .map((page) => normalizeImageUrl(page?.url))
+
+        const pageItems: any[] = Array.isArray(pagesData)
+            ? pagesData
+            : Array.isArray(pagesData?.pages)
+                ? pagesData.pages
+                : Array.isArray(pagesData?.data)
+                    ? pagesData.data
+                    : Array.isArray(pagesData?.result)
+                        ? pagesData.result
+                        : [];
+
+        const pages = pageItems
+            .map((page) => {
+                if (typeof page === 'string') return normalizeImageUrl(page);
+                return normalizeImageUrl(page?.url ?? page?.image ?? page?.src ?? page?.path);
+            })
             .filter(Boolean);
+
+        if (!Array.isArray(pagesData) && pageItems.length === 0) {
+            const apiMessage = String(pagesData?.message ?? pagesData?.error ?? '').toLowerCase();
+            if (response.status === 403 || pagesData?.statusCode === 403 || apiMessage.includes('forbidden')) {
+                throw new Error('Chapter is protected. Open YuriGarden source and complete Cloudflare/verification, then try again.');
+            }
+        }
 
         if (!pages.length) {
             throw new Error('No pages found for this chapter');
