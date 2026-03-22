@@ -372,6 +372,10 @@ const buildComicsQuery = (params: {
     return query.join('&');
 };
 
+const sleep = async (ms: number): Promise<void> => {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+};
+
 export const YuriGardenInfo: SourceInfo = {
     version: '1.0.0',
     name: 'YuriGarden',
@@ -566,15 +570,34 @@ export class YuriGarden implements ChapterProviding, MangaProviding, SearchResul
     async getChapterDetails(mangaId: string, chapterId: string): Promise<ChapterDetails> {
         const normalizedMangaId = extractMangaId(mangaId);
         const normalizedChapterId = extractChapterId(chapterId);
-        const fetchPayload = async (useEdit: boolean): Promise<any> => {
+        const fetchPayload = async (useEdit: boolean, attempt = 0): Promise<any> => {
             const request = App.createRequest({
                 url: `${API_DOMAIN}api/chapters/pages/${normalizedChapterId}${useEdit ? '?edit=true' : ''}`,
                 method: 'GET',
             });
             const response = await this.requestManager.schedule(request, 1);
+
+            if (response.status === 429) {
+                if (attempt < 3) {
+                    await sleep(1200 * (attempt + 1));
+                    return fetchPayload(useEdit, attempt + 1);
+                }
+                throw new Error('Rate limited while loading chapter pages');
+            }
+
             this.cloudflareError(response.status);
 
             const rawPayload = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+
+            const statusCode = Number(rawPayload?.statusCode ?? rawPayload?.data?.statusCode ?? 0);
+            if (statusCode === 429) {
+                if (attempt < 3) {
+                    await sleep(1200 * (attempt + 1));
+                    return fetchPayload(useEdit, attempt + 1);
+                }
+                throw new Error('Rate limited while loading chapter pages payload');
+            }
+
             return normalizeChapterPagesPayload(rawPayload);
         };
 
@@ -583,6 +606,8 @@ export class YuriGarden implements ChapterProviding, MangaProviding, SearchResul
 
         if (payloadHasScrambleHints(payload)) {
             try {
+                // The edit endpoint can be briefly rate-limited if called immediately.
+                await sleep(900);
                 const editPayload = await fetchPayload(true);
                 const editPages = extractPagesFromPayload(editPayload, true);
                 if (editPages.length > 0) pages = editPages;
