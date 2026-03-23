@@ -1593,16 +1593,22 @@ class CManga {
     }
     async getMangaDetails(mangaId) {
         const domain = await this.getDomain();
-        const json = JSON.parse(JSON.parse(await this.getAPI(`api/get_data_by_id?table=album&data=info&id=${mangaId}`))['info']);
-        return this.parser.parseMangaDetails(json, mangaId, domain);
+        const payload = JSON.parse(await this.getAPI(`api/get_data_by_id?table=album&data=info&id=${mangaId}`));
+        const infoRaw = payload?.data?.info ?? payload?.info;
+        const info = typeof infoRaw === 'string' ? JSON.parse(infoRaw) : infoRaw;
+        if (!info || typeof info !== 'object') {
+            throw new Error('CManga details payload is invalid');
+        }
+        return this.parser.parseMangaDetails(info, mangaId, domain);
     }
     async getChapters(mangaId) {
         const json = JSON.parse(await this.getAPI(`api/chapter_list?album=${mangaId}&page=1&limit=99999999&v=0`));
         return this.parser.parseChapters(json);
     }
     async getChapterDetails(mangaId, chapterId) {
-        const json = await this.getAPI(`api/chapter_image?chapter=${chapterId}&v=0`);
-        const pages = this.parser.parseChapterDetails(JSON.parse(json));
+        const payload = JSON.parse(await this.getAPI(`api/chapter_image?chapter=${chapterId}&v=0`));
+        const pagePayload = payload?.data ?? payload;
+        const pages = this.parser.parseChapterDetails(pagePayload);
         return App.createChapterDetails({
             id: chapterId,
             mangaId: mangaId,
