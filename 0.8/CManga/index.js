@@ -1546,6 +1546,22 @@ class CManga {
             return pathOrUrl;
         return `${domain}${pathOrUrl.replace(/^\/+/, '')}`;
     }
+    extractList(payload) {
+        if (Array.isArray(payload))
+            return payload;
+        if (Array.isArray(payload?.data?.data))
+            return payload.data.data;
+        if (Array.isArray(payload?.data))
+            return payload.data;
+        if (Array.isArray(payload?.items))
+            return payload.items;
+        return [];
+    }
+    extractTotal(payload, fallbackCount) {
+        const raw = payload?.total ?? payload?.data?.total ?? payload?.meta?.total ?? fallbackCount;
+        const value = Number(raw);
+        return Number.isFinite(value) && value > 0 ? value : fallbackCount;
+    }
     getMangaShareUrl(mangaId) {
         return `${this.activeDomain}${mangaId}`;
     }
@@ -1633,9 +1649,10 @@ class CManga {
         // const response = await this.requestManager.schedule(request, 1);
         // const json = (query.title || search.top !== "") ? JSON.parse(response.data as string) : JSON.parse(JSON.parse(response.data as string));
         // const tiles = this.parser.parseSearch(json, search, DOMAIN);
-        const json = JSON.parse(await this.getAPI(url));
-        const tiles = this.parser.parseSearch(json, domain);
-        const allPage = (json['total'] / 40);
+        const payload = JSON.parse(await this.getAPI(url));
+        const list = this.extractList(payload);
+        const tiles = this.parser.parseSearch(list, domain);
+        const allPage = Math.max(1, Math.ceil(this.extractTotal(payload, list.length) / 40));
         metadata = (page < allPage) ? { page: page + 1 } : undefined;
         return App.createPagedResults({
             results: tiles,
@@ -1662,10 +1679,11 @@ class CManga {
                 default:
                     throw new Error('Invalid home section ID');
             }
-            const json = JSON.parse(await this.getAPI(url));
+            const payload = JSON.parse(await this.getAPI(url));
+            const list = this.extractList(payload);
             switch (section.id) {
                 case 'new_updated':
-                    section.items = this.parser.parseNewUpdatedSection(json['data'], domain);
+                    section.items = this.parser.parseNewUpdatedSection(list, domain);
                     break;
                 // case 'new_added':
                 //     section.items = this.parser.parseNewAddedSection(json, DOMAIN);
@@ -1688,9 +1706,10 @@ class CManga {
             default:
                 throw new Error('Requested to getViewMoreItems for a section ID which doesn\'t exist');
         }
-        const json = JSON.parse(await this.getAPI(url));
-        const manga = this.parser.parseViewMore(json['data'], domain);
-        const allPage = (json['total'] / 40);
+        const payload = JSON.parse(await this.getAPI(url));
+        const list = this.extractList(payload);
+        const manga = this.parser.parseViewMore(list, domain);
+        const allPage = Math.max(1, Math.ceil(this.extractTotal(payload, list.length) / 40));
         metadata = (page < allPage) ? { page: page + 1 } : undefined;
         return App.createPagedResults({
             results: manga,
@@ -1708,20 +1727,21 @@ class CManga {
         const pages = 10;
         for (let page = 1; page <= pages; page++) {
             const url = `${domain}api/list_item?page=${page}&limit=40&sort=new&type=all&tag=&child_protect=off&status=all&num_chapter=0`;
-            const json = JSON.parse(await this.getAPI(url));
-            const updateManga = Object.keys(json).map(key => {
-                const id = `${json[key].url}-${json[key].id_book}`;
-                const [date, time] = json[key].last_update.split(' ');
-                const [year, month, day] = date.split('-');
-                const [hour, minute] = time.split(':');
+            const payload = JSON.parse(await this.getAPI(url));
+            const list = this.extractList(payload);
+            const updateManga = list.map((item) => {
+                const id = `${item?.url ?? ''}-${item?.id_book ?? ''}`;
+                const [datePart = '', timePart = ''] = String(item?.last_update ?? '').split(' ');
+                const [year, month, day] = datePart.split('-');
+                const [hour, minute] = timePart.split(':');
                 const formattedTime = `${hour}:${minute}`;
                 const formattedDate = `${month}/${day}/${year}`;
-                const timeFinal = new Date(`${formattedDate} ${formattedTime}`);
+                const timeFinal = datePart && timePart ? new Date(`${formattedDate} ${formattedTime}`) : new Date(0);
                 return {
                     id,
                     time: timeFinal
                 };
-            });
+            }).filter((item) => !!item.id && item.id !== '-');
             updatedManga.push(...updateManga);
         }
         const returnObject = this.parser.parseUpdatedManga(updatedManga, time, ids);
@@ -1736,18 +1756,59 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.Parser = void 0;
 const entities = require("entities");
 class Parser {
+    toItems(json) {
+        if (Array.isArray(json))
+            return json;
+        if (Array.isArray(json?.data?.data))
+            return json.data.data;
+        if (Array.isArray(json?.data))
+            return json.data;
+        if (Array.isArray(json?.items))
+            return json.items;
+        if (json && typeof json === 'object') {
+            return Object.values(json).filter((value) => value && typeof value === 'object' && !Array.isArray(value));
+        }
+        return [];
+    }
+    parseInfo(item) {
+        if (!item || typeof item !== 'object')
+            return undefined;
+        const rawInfo = item.info ?? item['info'];
+        if (typeof rawInfo === 'string') {
+            try {
+                return JSON.parse(rawInfo);
+            }
+            catch {
+                return undefined;
+            }
+        }
+        if (rawInfo && typeof rawInfo === 'object')
+            return rawInfo;
+        if (item.name || item.avatar || item.chapter)
+            return item;
+        return undefined;
+    }
+    buildAlbumImage(domain, avatar) {
+        const value = String(avatar ?? '').trim();
+        if (!value)
+            return '';
+        if (/^https?:\/\//i.test(value))
+            return value;
+        return `${domain}assets/tmp/album/${value}`;
+    }
     parseMangaDetails(json, mangaId, DOMAIN) {
         const tags = [];
-        for (const id of json.tags) {
+        const sourceTags = Array.isArray(json?.tags) ? json.tags : [];
+        for (const id of sourceTags) {
             if (!id)
                 continue;
             const label = this.titleCase(id);
             tags.push(App.createTag({ label, id }));
         }
-        const titles = [this.titleCase(json.name)];
-        const status = json.status == 'doing' ? 'Đang cập nhật' : 'Hoàn thành';
-        const desc = this.decodeHTMLEntity(json.detail);
-        const image = `${DOMAIN}assets/tmp/album/${json.avatar}`;
+        const titles = [this.titleCase(String(json?.name ?? ''))];
+        const status = json?.status == 'doing' ? 'Đang cập nhật' : 'Hoàn thành';
+        const desc = this.decodeHTMLEntity(String(json?.detail ?? ''));
+        const image = this.buildAlbumImage(DOMAIN, json?.avatar);
         return App.createSourceManga({
             id: mangaId,
             mangaInfo: App.createMangaInfo({
@@ -1761,23 +1822,28 @@ class Parser {
     }
     parseChapters(json) {
         const chapters = [];
-        for (const obj of json) {
-            const in4 = JSON.parse(obj.info);
-            const [date, time] = in4.last_update.split(' ');
-            const [year, month, day] = date.split('-');
-            const [hour, minute] = time.split(':');
+        for (const obj of this.toItems(json)) {
+            const in4 = this.parseInfo(obj);
+            if (!in4)
+                continue;
+            const lastUpdate = String(in4.last_update ?? '').trim();
+            const [date, time] = lastUpdate.split(' ');
+            const [year, month, day] = String(date ?? '').split('-');
+            const [hour, minute] = String(time ?? '').split(':');
             const formattedTime = `${hour}:${minute}`;
             const formattedDate = `${month}/${day}/${year}`;
-            const id = obj.id_chapter;
-            const chapNum = parseFloat(in4.num);
-            const name = this.titleCase(in4.name);
+            const id = String(obj.id_chapter ?? obj.id ?? '');
+            if (!id)
+                continue;
+            const chapNum = parseFloat(String(in4.num ?? in4.chapter?.last ?? 0));
+            const name = this.titleCase(String(in4.name ?? `Chapter ${Number.isFinite(chapNum) ? chapNum : ''}`));
             chapters.push(App.createChapter({
                 id,
-                chapNum,
+                chapNum: Number.isFinite(chapNum) ? chapNum : 0,
                 name,
                 langCode: '🇻🇳',
-                time: new Date(`${formattedDate} ${formattedTime}`),
-                group: `${in4.statics.view} lượt xem`,
+                time: date && time ? new Date(`${formattedDate} ${formattedTime}`) : new Date(),
+                group: `${in4?.statics?.view ?? 0} lượt xem`,
             }));
         }
         if (chapters.length == 0) {
@@ -1787,7 +1853,10 @@ class Parser {
     }
     parseChapterDetails(json) {
         const pages = [];
-        for (const img of json['image']) {
+        const imageList = Array.isArray(json?.image) ? json.image : [];
+        for (const img of imageList) {
+            if (typeof img !== 'string')
+                continue;
             pages.push(img.replace('?v=1&', '?v=9999&'));
         }
         return pages;
@@ -1796,32 +1865,30 @@ class Parser {
         const manga = [];
         const getData = (item, in4) => ({
             mangaId: `${item.id_album}`,
-            image: `${DOMAIN}assets/tmp/album/${in4.avatar}`,
+            image: this.buildAlbumImage(DOMAIN, in4.avatar),
             title: this.titleCase(in4.name),
-            subtitle: `Chap ${in4.chapter.last}`,
+            subtitle: `Chap ${in4?.chapter?.last ?? '?'}`,
             // subtitle: search.top !== '' ? `${Number(item.total_view).toLocaleString()} views` : `Chap ${item.last_chapter}`
         });
-        // const itemList = search.top !== '' ? json[search.top] : json;
-        for (const i of Object.keys(json)) {
-            // const item = itemList[i];
-            const item = json[i];
-            var in4 = JSON.parse(item['info']);
-            // if (!item.name) continue;
+        for (const item of this.toItems(json)) {
+            const in4 = this.parseInfo(item);
+            if (!item?.id_album || !in4?.name)
+                continue;
             manga.push(App.createPartialSourceManga(getData(item, in4)));
         }
         return manga;
     }
     parseNewUpdatedSection(json, DOMAIN) {
         const newUpdatedItems = [];
-        for (var i of Object.keys(json)) {
-            var item = json[i];
-            var in4 = JSON.parse(item['info']);
-            // if (!item.name) continue;
+        for (const item of this.toItems(json)) {
+            const in4 = this.parseInfo(item);
+            if (!item?.id_album || !in4?.name)
+                continue;
             newUpdatedItems.push(App.createPartialSourceManga({
                 mangaId: `${item.id_album}`,
-                image: `${DOMAIN}assets/tmp/album/${in4.avatar}`,
+                image: this.buildAlbumImage(DOMAIN, in4.avatar),
                 title: this.titleCase(in4.name),
-                subtitle: `Chap ${in4.chapter.last}`,
+                subtitle: `Chap ${in4?.chapter?.last ?? '?'}`,
             }));
         }
         return newUpdatedItems;
@@ -1845,14 +1912,14 @@ class Parser {
         const manga = [];
         const getData = (item, in4) => ({
             mangaId: `${item.id_album}`,
-            image: `${DOMAIN}assets/tmp/album/${in4.avatar}`,
+            image: this.buildAlbumImage(DOMAIN, in4.avatar),
             title: this.titleCase(in4.name),
-            subtitle: `Chap ${in4.chapter.last}`,
+            subtitle: `Chap ${in4?.chapter?.last ?? '?'}`,
         });
-        for (const i of Object.keys(json)) {
-            const item = json[i];
-            var in4 = JSON.parse(item['info']);
-            // if (!item.name) continue;
+        for (const item of this.toItems(json)) {
+            const in4 = this.parseInfo(item);
+            if (!item?.id_album || !in4?.name)
+                continue;
             manga.push(App.createPartialSourceManga(getData(item, in4)));
         }
         return manga;
