@@ -11,18 +11,54 @@ const entities = require("entities");
 
 export class Parser {
 
+    private toItems(json: any): any[] {
+        if (Array.isArray(json)) return json;
+        if (Array.isArray(json?.data?.data)) return json.data.data;
+        if (Array.isArray(json?.data)) return json.data;
+        if (Array.isArray(json?.items)) return json.items;
+        if (json && typeof json === 'object') {
+            return Object.values(json).filter((value: any) => value && typeof value === 'object' && !Array.isArray(value));
+        }
+        return [];
+    }
+
+    private parseInfo(item: any): any | undefined {
+        if (!item || typeof item !== 'object') return undefined;
+        const rawInfo = item.info ?? item['info'];
+
+        if (typeof rawInfo === 'string') {
+            try {
+                return JSON.parse(rawInfo);
+            } catch {
+                return undefined;
+            }
+        }
+
+        if (rawInfo && typeof rawInfo === 'object') return rawInfo;
+        if (item.name || item.avatar || item.chapter) return item;
+        return undefined;
+    }
+
+    private buildAlbumImage(domain: string, avatar?: string): string {
+        const value = String(avatar ?? '').trim();
+        if (!value) return '';
+        if (/^https?:\/\//i.test(value)) return value;
+        return `${domain}assets/tmp/album/${value}`;
+    }
+
     parseMangaDetails(json: any, mangaId: string, DOMAIN: string): SourceManga {
         const tags: Tag[] = [];
 
-        for (const id of json.tags) {
+        const sourceTags = Array.isArray(json?.tags) ? json.tags : [];
+        for (const id of sourceTags) {
             if (!id) continue;
             const label = this.titleCase(id);
             tags.push(App.createTag({ label, id }));
         }
-        const titles = [this.titleCase(json.name)];
-        const status = json.status == 'doing' ? 'Đang cập nhật' : 'Hoàn thành'
-        const desc = this.decodeHTMLEntity(json.detail)
-        const image = `${DOMAIN}assets/tmp/album/${json.avatar}`
+        const titles = [this.titleCase(String(json?.name ?? ''))];
+        const status = json?.status == 'doing' ? 'Đang cập nhật' : 'Hoàn thành'
+        const desc = this.decodeHTMLEntity(String(json?.detail ?? ''))
+        const image = this.buildAlbumImage(DOMAIN, json?.avatar)
 
         return App.createSourceManga({
             id: mangaId,
@@ -39,26 +75,30 @@ export class Parser {
     parseChapters(json: any): Chapter[] {
         const chapters: Chapter[] = [];
 
-        for (const obj of json) {
-            const in4 = JSON.parse(obj.info)
+        for (const obj of this.toItems(json)) {
+            const in4 = this.parseInfo(obj);
+            if (!in4) continue;
 
-            const [date, time] = in4.last_update.split(' ');
-            const [year, month, day] = date.split('-');
-            const [hour, minute] = time.split(':');
+            const lastUpdate = String(in4.last_update ?? '').trim();
+            const [date, time] = lastUpdate.split(' ');
+            const [year, month, day] = String(date ?? '').split('-');
+            const [hour, minute] = String(time ?? '').split(':');
             const formattedTime = `${hour}:${minute}`
             const formattedDate = `${month}/${day}/${year}`
 
-            const id = obj.id_chapter;
-            const chapNum = parseFloat(in4.num);
-            const name = this.titleCase(in4.name);
+            const id = String(obj.id_chapter ?? obj.id ?? '');
+            if (!id) continue;
+
+            const chapNum = parseFloat(String(in4.num ?? in4.chapter?.last ?? 0));
+            const name = this.titleCase(String(in4.name ?? `Chapter ${Number.isFinite(chapNum) ? chapNum : ''}`));
 
             chapters.push(App.createChapter({
                 id,
-                chapNum,
+                chapNum: Number.isFinite(chapNum) ? chapNum : 0,
                 name,
                 langCode: '🇻🇳',
-                time: new Date(`${formattedDate} ${formattedTime}`),
-                group: `${in4.statics.view} lượt xem`,
+                time: date && time ? new Date(`${formattedDate} ${formattedTime}`) : new Date(),
+                group: `${in4?.statics?.view ?? 0} lượt xem`,
             }));
         }
 
@@ -72,7 +112,9 @@ export class Parser {
     parseChapterDetails(json: any): string[] {
         const pages: string[] = [];
 
-        for (const img of json['image']) {
+        const imageList = Array.isArray(json?.image) ? json.image : [];
+        for (const img of imageList) {
+            if (typeof img !== 'string') continue;
             pages.push(img.replace('?v=1&', '?v=9999&'));
         }
 
@@ -84,18 +126,15 @@ export class Parser {
 
         const getData = (item: any, in4: any) => ({
             mangaId: `${item.id_album}`,
-            image: `${DOMAIN}assets/tmp/album/${in4.avatar}`,
+            image: this.buildAlbumImage(DOMAIN, in4.avatar),
             title: this.titleCase(in4.name),
-            subtitle: `Chap ${in4.chapter.last}`,
+            subtitle: `Chap ${in4?.chapter?.last ?? '?'}`,
             // subtitle: search.top !== '' ? `${Number(item.total_view).toLocaleString()} views` : `Chap ${item.last_chapter}`
         });
 
-        // const itemList = search.top !== '' ? json[search.top] : json;
-        for (const i of Object.keys(json)) {
-            // const item = itemList[i];
-            const item = json[i];
-            var in4 = JSON.parse(item['info'])
-            // if (!item.name) continue;
+        for (const item of this.toItems(json)) {
+            const in4 = this.parseInfo(item)
+            if (!item?.id_album || !in4?.name) continue;
             manga.push(App.createPartialSourceManga(getData(item, in4)));
         }
 
@@ -105,15 +144,15 @@ export class Parser {
     parseNewUpdatedSection(json: any, DOMAIN: string): PartialSourceManga[] {
         const newUpdatedItems: PartialSourceManga[] = [];
 
-        for (var i of Object.keys(json)) {
-            var item = json[i];
-            var in4 = JSON.parse(item['info'])
-            // if (!item.name) continue;
+        for (const item of this.toItems(json)) {
+            const in4 = this.parseInfo(item)
+            if (!item?.id_album || !in4?.name) continue;
+
             newUpdatedItems.push(App.createPartialSourceManga({
                 mangaId: `${item.id_album}`,
-                image: `${DOMAIN}assets/tmp/album/${in4.avatar}`,
+                image: this.buildAlbumImage(DOMAIN, in4.avatar),
                 title: this.titleCase(in4.name),
-                subtitle: `Chap ${in4.chapter.last}`,
+                subtitle: `Chap ${in4?.chapter?.last ?? '?'}`,
             }))
         }
 
@@ -142,15 +181,14 @@ export class Parser {
 
         const getData = (item: any, in4: any) => ({
             mangaId: `${item.id_album}`,
-            image: `${DOMAIN}assets/tmp/album/${in4.avatar}`,
+            image: this.buildAlbumImage(DOMAIN, in4.avatar),
             title: this.titleCase(in4.name),
-            subtitle: `Chap ${in4.chapter.last}`,
+            subtitle: `Chap ${in4?.chapter?.last ?? '?'}`,
         });
 
-        for (const i of Object.keys(json)) {
-            const item = json[i];
-            var in4 = JSON.parse(item['info'])
-            // if (!item.name) continue;
+        for (const item of this.toItems(json)) {
+            const in4 = this.parseInfo(item)
+            if (!item?.id_album || !in4?.name) continue;
             manga.push(App.createPartialSourceManga(getData(item, in4)));
         }
 

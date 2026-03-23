@@ -138,6 +138,20 @@ export class CManga implements ChapterProviding, MangaProviding, SearchResultsPr
         return `${domain}${pathOrUrl.replace(/^\/+/, '')}`;
     }
 
+    private extractList(payload: any): any[] {
+        if (Array.isArray(payload)) return payload;
+        if (Array.isArray(payload?.data?.data)) return payload.data.data;
+        if (Array.isArray(payload?.data)) return payload.data;
+        if (Array.isArray(payload?.items)) return payload.items;
+        return [];
+    }
+
+    private extractTotal(payload: any, fallbackCount: number): number {
+        const raw = payload?.total ?? payload?.data?.total ?? payload?.meta?.total ?? fallbackCount;
+        const value = Number(raw);
+        return Number.isFinite(value) && value > 0 ? value : fallbackCount;
+    }
+
     getMangaShareUrl(mangaId: string): string {
         return `${this.activeDomain}${mangaId}`;
     }
@@ -240,9 +254,10 @@ export class CManga implements ChapterProviding, MangaProviding, SearchResultsPr
         // const response = await this.requestManager.schedule(request, 1);
         // const json = (query.title || search.top !== "") ? JSON.parse(response.data as string) : JSON.parse(JSON.parse(response.data as string));
         // const tiles = this.parser.parseSearch(json, search, DOMAIN);
-        const json = JSON.parse(await this.getAPI(url));
-        const tiles = this.parser.parseSearch(json, domain);
-        const allPage = (json['total'] / 40);
+        const payload = JSON.parse(await this.getAPI(url));
+        const list = this.extractList(payload);
+        const tiles = this.parser.parseSearch(list, domain);
+        const allPage = Math.max(1, Math.ceil(this.extractTotal(payload, list.length) / 40));
         metadata = (page < allPage) ? { page: page + 1 } : undefined;
         return App.createPagedResults({
             results: tiles,
@@ -272,10 +287,11 @@ export class CManga implements ChapterProviding, MangaProviding, SearchResultsPr
                     throw new Error('Invalid home section ID');
             }
 
-            const json = JSON.parse(await this.getAPI(url));
+            const payload = JSON.parse(await this.getAPI(url));
+            const list = this.extractList(payload);
             switch (section.id) {
                 case 'new_updated':
-                    section.items = this.parser.parseNewUpdatedSection(json['data'], domain);
+                    section.items = this.parser.parseNewUpdatedSection(list, domain);
                     break;
                 // case 'new_added':
                 //     section.items = this.parser.parseNewAddedSection(json, DOMAIN);
@@ -300,9 +316,10 @@ export class CManga implements ChapterProviding, MangaProviding, SearchResultsPr
                 throw new Error('Requested to getViewMoreItems for a section ID which doesn\'t exist');
         }
 
-        const json = JSON.parse(await this.getAPI(url));
-        const manga = this.parser.parseViewMore(json['data'], domain);
-        const allPage = (json['total'] / 40);
+        const payload = JSON.parse(await this.getAPI(url));
+        const list = this.extractList(payload);
+        const manga = this.parser.parseViewMore(list, domain);
+        const allPage = Math.max(1, Math.ceil(this.extractTotal(payload, list.length) / 40));
         metadata = (page < allPage) ? { page: page + 1 } : undefined;
         return App.createPagedResults({
             results: manga,
@@ -323,21 +340,22 @@ export class CManga implements ChapterProviding, MangaProviding, SearchResultsPr
         const pages = 10;
         for (let page = 1; page <= pages; page++) {
             const url = `${domain}api/list_item?page=${page}&limit=40&sort=new&type=all&tag=&child_protect=off&status=all&num_chapter=0`
-            const json = JSON.parse(await this.getAPI(url));
-            const updateManga = Object.keys(json).map(key => {
-                const id = `${json[key].url}-${json[key].id_book}`;
-                const [date, time] = json[key].last_update.split(' ');
-                const [year, month, day] = date.split('-');
-                const [hour, minute] = time.split(':');
+            const payload = JSON.parse(await this.getAPI(url));
+            const list = this.extractList(payload);
+            const updateManga = list.map((item: any) => {
+                const id = `${item?.url ?? ''}-${item?.id_book ?? ''}`;
+                const [datePart = '', timePart = ''] = String(item?.last_update ?? '').split(' ');
+                const [year, month, day] = datePart.split('-');
+                const [hour, minute] = timePart.split(':');
                 const formattedTime = `${hour}:${minute}`;
                 const formattedDate = `${month}/${day}/${year}`;
-                const timeFinal = new Date(`${formattedDate} ${formattedTime}`);
+                const timeFinal = datePart && timePart ? new Date(`${formattedDate} ${formattedTime}`) : new Date(0);
 
                 return {
                     id,
                     time: timeFinal
                 };
-            });
+            }).filter((item: any) => !!item.id && item.id !== '-');
 
             updatedManga.push(...updateManga);
 
